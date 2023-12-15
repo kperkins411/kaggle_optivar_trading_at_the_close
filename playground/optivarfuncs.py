@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 import itertools
 
-def getdf(numb_days= 5, stocks= [0,1,3], numb_secs_day= 4, n_nulls= 1, drop_days= [1,2]):
+#--------------------------------------get sample dataframe
+def getdf(numb_days= 5, stocks= [0,1,3], numb_secs_day= 4, n_nulls= 1, drop_days= [1,2], target='target'):
     '''
     generate a dataframe
     num_days: how many days in dataframe
@@ -20,10 +21,101 @@ def getdf(numb_days= 5, stocks= [0,1,3], numb_secs_day= 4, n_nulls= 1, drop_days
     #make first n entries in near_price and far_price NaN
     df.loc[((df.seconds_in_bucket <= n_nulls)), ['near_price', 'far_price']] = np.nan
 
+    #create a target column
+    df[target]=list(range(len(df)))
+
     #get rid of some days (drop_days=[1,2], .index gives index of the rows
     df.drop(df[df.date_id.isin(drop_days)].index, inplace=True)
     return df
+#--------------------------------------get splits (no unit tests)
+import numpy as np
 
+def getsplitday( X, val_size, verbose = True):
+    '''
+    find split that seperates by day
+    ex 
+    tstdf=of.getdf(numb_days= 10, drop_days= [2,3])
+    getsplitday( df, val_sze=0.1)
+    9
+    '''
+    days=X.date_id.unique()
+    index=int(np.floor(len(days)*(1-val_size)))
+    if (verbose):
+        print(f"For days{days} and val_size={val_size}, split day={days[index]}")
+    return days[index]
+
+def splitDataset(X, val_size, copy=False,verbose=True):
+    '''
+    ensures datasets do not split accross a day
+    returns train and val
+    ex 
+    tstdf=of.getdf(numb_days= 10, drop_days= [2,3])
+    X_train, X_val = splitDataset(tstdf, 0.2, verbose=False):
+    '''
+    #get the day to split on
+    day=getsplitday( X,val_size, verbose)
+    # print(f'df shape={X.shape}, min_date={X.date_id.min()},max_date={X.date_id.max()}, val_start={val_start}, tst_start={tst_start}')
+
+    #get train, val
+    if(copy==True):
+        X_train=X[X.eval(f"(date_id<{day})")].copy()
+        X_val=X.loc[(X.date_id>=day)].copy()
+    else:
+        X_train=X[X.eval(f"(date_id<{day})")]
+        X_val=X.loc[(X.date_id>=day)]
+    return  X_train, X_val
+
+def splitTarget(X, dep_var='target',verbose=True):
+    '''
+    split target from X
+    ex
+    X_train, y_train = splitTarget(X_train, dep_var)
+    '''
+    y = X[dep_var]
+    X.drop(columns=[dep_var],inplace=True)
+    return X,y
+
+def get2_DatasetAndTarget(X, dep_var='target', val_size=0.2,copy=False, verbose=True):
+    '''
+    split into 2 datasets
+    ex 
+    tstdf=of.getdf(numb_days= 10, drop_days= [2,3])
+    X_train, X_val, y_train, y_val = get2_DatasetAndTarget(tstdf,dep_var='target', val_size, verbose=False):
+    '''
+    X_train, X_val = splitDataset(X, val_size, copy,verbose)
+    X_train, y_train = splitTarget(X_train, dep_var)
+    X_val, y_val = splitTarget(X_val, dep_var)
+    if (verbose):
+        print(f"len(X_train)={len(X_train)} and len(X_val)={len(X_val)}")
+        tots=len(X_val)+len(X_train)
+        print(f"train size={len(X_train)/tots}, val size={len(X_val)/tots}")
+
+    return X_train, X_val, y_train, y_val
+
+def get3_DatasetAndTarget(X, dep_var='target', val_size=0.1, test_size=0.2,copy=False,verbose = True):
+    '''
+    split into 3 datasets
+    ex 
+    tstdf=of.getdf(numb_days= 10, drop_days= [2,3])
+    X_train, X_val, X_tst, y_train, y_val, y_tst = get3_DatasetAndTarget(tstdf, dep_var='target', .1,.2 verbose=False):
+    '''
+ 
+    X_train, X_val= splitDataset(X, val_size+test_size,copy, verbose)
+    X_val, X_tst = splitDataset(X_val, test_size/(val_size+test_size),copy, verbose)
+
+    X_train, y_train = splitTarget(X_train, dep_var)
+    X_val, y_val = splitTarget(X_val, dep_var)
+    X_tst, y_tst = splitTarget(X_tst, dep_var)
+
+    if (verbose):
+        print(f"len(X_train)={len(X_train)} and len(X_val)={len(X_val)}, len(X_tst)={len(X_tst)}")
+        tots=len(X_val)+len(X_train)+len(X_tst)
+        print(f"train size={len(X_train)/tots}, val size={len(X_val)/tots}, tst size={len(X_tst)/tots}")
+
+    return X_train, X_val, X_tst, y_train, y_val, y_tst
+
+
+#--------------------------------------infer missing columns
 class autocol():
     '''
     adds 1 boolean column to df for each column in cols.
@@ -36,8 +128,9 @@ class autocol():
     def __init__(self, columns, df):
         self.columns=columns
         for c in self.columns:
-            #0 means c is not inferred, 1 means it is
-            df['syn_'+c] = 0
+            if 'syn_'+c not in df.columns:
+                #0 means c is not inferred, 1 means it is
+                df['syn_'+c] = 0
     def remove_syn_columns(self,df):
         l=[]
         for c in self.columns:
@@ -54,13 +147,20 @@ class bfs():
             df = df.apply(bs.backfill, axis=1)
     '''
     def __init__(self, columns, df, dfgb=None):
-        self.date_id_min = df.date_id.min()
-        self.a = autocol(columns, df)
+        self.columns = columns
+
+        if(df is not None):
+            self.doautocol(df)
+            
         if (dfgb is not None):
             dfgb.fillna(0, inplace=True)
             # self.days=list(self.dfgb.index.get_level_values(1).unique() )
-        self.bfs = [bf(col, self.date_id_min, dfgb) for col in columns]
+        self.bfs = [bf(col, dfgb) for col in self.columns]
 
+    def doautocol(self, df):
+        #add appropriate syn_ columns to df
+        self.a = autocol(self.columns, df)
+        
     def backfill(self, x):
         for b in self.bfs:
             x = b.backfill(x)
@@ -81,17 +181,15 @@ class bf():
     backfills NaNs in column with last value registered in that column (likely from the day before)
 
     '''    
-    def __init__(self,column,date_id_min=0,dfgb=None):
+    def __init__(self,column,dfgb=None):
         '''
         column: column to operate on
-        date_id_min: initial start_date of df
         '''
         self.column=column  #column to operate on
         self.syn_column='syn_'+column  #mark as 1 if synthetic value generated
         self.dfgb=dfgb
         self.lastvaliddays={}
         self.vals = {}  #cache of column val for (stock_id, date_id)
-        self.date_id_min=date_id_min
         
     def backfill(self, x):
         '''
